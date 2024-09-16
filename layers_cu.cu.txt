@@ -1,0 +1,196 @@
+#include <assert.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+// Include SSE intrinsics
+#if defined(_MSC_VER)
+#include <intrin.h>
+#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+#include <immintrin.h>
+#include <x86intrin.h>
+#endif
+
+// Include OpenMP
+//#include <omp.h>
+extern "C" {
+#include "layers.h"
+}
+
+#include "volume.h"
+__device__ inline double volume_get(volume_t *v, int x, int y, int d) {
+    return v->weights[((v->width * y) + x) * v->depth + d];
+}
+
+__device__ inline void volume_set(volume_t *v, int x, int y, int d, double value) {
+    v->weights[((v->width * y) + x) * v->depth + d] = value;
+}
+/*
+//extern double volume_get(volume_t *v, int x, int y, int d);
+// Performs the forward pass for a convolutional layer by convolving each one
+// of the filters with a particular input, and placing the result in the output
+// array.
+//
+// One way to think about convolution in this case is that we have one of the
+// layer's filters (a 3D array) that is superimposed on one of the layer's
+// inputs (a second 3D array) that has been implicitly padded with zeros. Since
+// convolution is a sum of products (described below), we don't actually have
+// to add any zeros to the input volume since those terms will not contribute
+// to the convolution. Instead, for each position in the filter, we just make
+// sure that we are in bounds for the input volume.
+//
+// Essentially, the filter is "sliding" across the input, in both the x and y
+// directions, where we increment our position in each direction by using the
+// stride parameter.
+//
+// At each position, we compute the sum of the elementwise product of the filter
+// and the part of the array it's covering. For instance, let's consider a 2D
+// case, where the filter (on the left) is superimposed on some part of the
+// input (on the right).
+//
+//   Filter             Input
+//  -1  0  1           1  2  3
+//  -1  0  1           4  5  6
+//  -1  0  1           7  8  9
+//
+// Here, the sum of the elementwise product is:
+//    Filter[0][0] * Input[0][0] + Filter[0][1] * Input[0][1] + ...
+//    = -1 * 1 + 0 * 2 + ... + 0 * 8 + 1 * 9
+//    = 6
+//
+// The 3D case is essentially the same, we just have to sum over the other
+// dimension as well. Also, since volumes are internally represented as 1D
+// arrays, we must use the volume_get and volume_set commands to access elements
+// at a coordinate (x, y, d). Finally, we add the corresponding bias for the
+// filter to the sum before putting it into the output volume.
+unsigned long int N=4096*4096;
+
+
+
+   //Here, your GPU kernel, modify the function header as well as kernel launch
+   __global__ void doGPU() {
+
+}
+extern "C" {
+
+
+void conv_forward_cu(conv_layer_t *l, volume_t **inputs, volume_t **outputs, int start, int end) {
+
+   //Put your conf_forward using GPU here.
+//The seqeuential code for conv_forward
+        /*
+    for (int i = start; i <= end; i++) {
+        volume_t *in = inputs[i];
+        volume_t *out = outputs[i];
+
+        int stride = l->stride;
+
+        for(int f = 0; f < l->output_depth; f++) {
+            volume_t *filter = l->filters[f];
+            int y = -l->pad;
+            for(int out_y = 0; out_y < l->output_height; y += stride, out_y++) {
+                int x = -l->pad;
+                for(int out_x = 0; out_x < l->output_width; x += stride, out_x++) {
+
+                    // Take sum of element-wise product
+                    double sum = 0.0;
+                    for(int fy = 0; fy < filter->height; fy++) {
+                        int in_y = y + fy;
+                        for(int fx = 0; fx < filter->width; fx++) {
+                            int in_x = x + fx;
+                            if(in_y >= 0 && in_y < in->height && in_x >=0 && in_x < in->width) {
+                                for(int fd = 0; fd < filter->depth; fd++) {
+                                    sum += volume_get(filter, fx, fy, fd) * volume_get(in, in_x, in_y, fd);
+                                }
+                            }
+                        }
+                    }
+
+                    sum += l->biases->weights[f];
+                    volume_set(out, out_x, out_y, f, sum);
+                }
+            }
+        }
+    }
+
+}
+
+}
+*/
+__global__ void conv_forward_kernel(conv_layer_t *l, volume_t *in, volume_t *out) {
+    // Retrieve the indices for the current thread
+    int out_x = blockIdx.x * blockDim.x + threadIdx.x;
+    int out_y = blockIdx.y * blockDim.y + threadIdx.y;
+    int f = blockIdx.z * blockDim.z + threadIdx.z;
+
+    // Check if the indices are within the output volume bounds
+    if (out_x < out->width && out_y < out->height && f < out->depth) {
+        int stride = l->stride;
+        int pad = l->pad;
+        volume_t *filter = l->filters[f];
+
+        int y = -pad + out_y * stride;
+        int x = -pad + out_x * stride;
+        double sum = 0.0;
+
+        // Perform the convolution
+        for (int fy = 0; fy < filter->height; fy++) {
+            int in_y = y + fy;
+            for (int fx = 0; fx < filter->width; fx++) {
+                int in_x = x + fx;
+                if (in_y >= 0 && in_y < in->height && in_x >= 0 && in_x < in->width) {
+                    for (int fd = 0; fd < filter->depth; fd++) {
+                        sum += volume_get(filter, fx, fy, fd) * volume_get(in, in_x, in_y, fd);
+                    }
+                }
+            }
+        }
+
+        sum += l->biases->weights[f];
+        volume_set(out, out_x, out_y, f, sum);
+    }
+}
+void conv_forward_cu(conv_layer_t *l, volume_t **inputs, volume_t **outputs, int start, int end) {
+    for (int i = start; i <= end; i++) {
+        volume_t *in = inputs[i];
+        volume_t *out = outputs[i];
+
+        // Allocate device memory for input and output volumes
+        volume_t *d_in, *d_out;
+        cudaMalloc(&d_in, sizeof(volume_t));
+        cudaMalloc(&d_out, sizeof(volume_t));
+
+        // Copy input volume from host to device
+        cudaMemcpy(d_in, in, sizeof(volume_t), cudaMemcpyHostToDevice);
+
+        // Define the dimensions for launching the CUDA kernel
+        dim3 blockSize(16, 16, 16);
+        dim3 gridSize(
+            (out->width + blockSize.x - 1) / blockSize.x,
+            (out->height + blockSize.y - 1) / blockSize.y,
+            (out->depth + blockSize.z - 1) / blockSize.z
+        );
+
+        // Launch the CUDA kernel
+        conv_forward_kernel<<<gridSize, blockSize>>>(l, d_in, d_out);
+
+        // Copy the output volume from device to host
+        cudaMemcpy(out, d_out, sizeof(volume_t), cudaMemcpyDeviceToHost);
+
+        // Free the device memory
+        cudaFree(d_in);
+        cudaFree(d_out);
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
